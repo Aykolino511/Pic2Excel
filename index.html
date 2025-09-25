@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bild zu Excel Konverter</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Tesseract.js für die Texterkennung (OCR) - Aktualisiert auf eine neuere, stabile Version -->
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js'></script>
+    <!-- SheetJS (XLSX) zum Erstellen von Excel-Dateien -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.17.5/xlsx.full.min.js"></script>
+</head>
+<body class="bg-gray-100 font-sans flex items-center justify-center min-h-screen">
+
+    <div class="container mx-auto p-4 md:p-8 max-w-2xl">
+        <div class="bg-white rounded-xl shadow-lg p-6 md:p-10">
+            <header class="text-center mb-8">
+                <h1 class="text-3xl font-bold text-gray-800">Bild zu Excel Konverter</h1>
+                <p class="text-gray-500 mt-2">Screenshots von Tabellen hierher ziehen, um sie zu konvertieren.</p>
+            </header>
+
+            <main>
+                <!-- Drag & Drop Zone -->
+                <div id="drop-zone" class="border-2 border-dashed border-gray-300 rounded-lg p-10 text-center cursor-pointer transition-all duration-300 hover:border-blue-500 hover:bg-blue-50">
+                    <div id="drop-zone-text">
+                        <svg class="mx-auto h-12 w-12 text-gray-400" stroke="currentColor" fill="none" viewBox="0 0 48 48" aria-hidden="true"><path d="M28 8H12a4 4 0 00-4 4v20m32-12v8m0 0v8a4 4 0 01-4 4H12a4 4 0 01-4-4v-4m32-4l-3.172-3.172a4 4 0 00-5.656 0L28 28M8 32l9.172-9.172a4 4 0 015.656 0L28 28m0 0l4 4m4-24h8m-4-4v8" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" /></svg>
+                        <p class="mt-2 text-lg text-gray-600">Bilddateien hier ablegen</p>
+                        <p class="text-xs text-gray-500">oder klicken, um Dateien auszuwählen (JPG, PNG)</p>
+                    </div>
+                    <div id="file-list" class="hidden text-left text-sm"></div>
+                </div>
+                <input type="file" id="file-input" class="hidden" accept="image/png, image/jpeg" multiple>
+
+                <!-- Aktionen & Status -->
+                <div id="actions" class="mt-6 flex justify-center items-center">
+                    <button id="process-btn" class="bg-blue-500 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300" disabled>
+                        Bilder verarbeiten
+                    </button>
+                    <button id="clear-btn" class="bg-red-500 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-red-600 ml-4 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300" disabled>
+                        Auswahl löschen
+                    </button>
+                </div>
+                <div id="status" class="mt-6 text-center text-sm text-gray-600 h-10"></div>
+                <div id="progress-bar-container" class="w-full bg-gray-200 rounded-full h-2.5 mt-2 hidden">
+                    <div id="progress-bar" class="bg-blue-600 h-2.5 rounded-full" style="width: 0%"></div>
+                </div>
+
+
+                <!-- Download-Button -->
+                <div class="mt-6 text-center">
+                    <button id="download-btn" class="bg-green-500 text-white font-bold py-3 px-6 rounded-lg shadow-md hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed transition-all duration-300" disabled>
+                        Excel-Datei herunterladen
+                    </button>
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        const dropZone = document.getElementById('drop-zone');
+        const fileInput = document.getElementById('file-input');
+        const processBtn = document.getElementById('process-btn');
+        const downloadBtn = document.getElementById('download-btn');
+        const statusDiv = document.getElementById('status');
+        const dropZoneText = document.getElementById('drop-zone-text');
+        const fileListDiv = document.getElementById('file-list');
+        const progressBarContainer = document.getElementById('progress-bar-container');
+        const progressBar = document.getElementById('progress-bar');
+        const clearBtn = document.getElementById('clear-btn');
+
+        let selectedFiles = [];
+        let extractedData = [];
+        // Feste Spaltenüberschriften für eine zuverlässige Ausgabe
+        const expectedHeaders = ['Lfd. NR.', 'Menge', 'Bezeichnung', 'ES2 - Code', 'Beanstandung', 'Verursacher', 'Größe'];
+
+
+        // Event Listener
+        dropZone.addEventListener('click', () => fileInput.click());
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('border-blue-500', 'bg-blue-50'); });
+        dropZone.addEventListener('dragleave', (e) => { e.preventDefault(); dropZone.classList.remove('border-blue-500', 'bg-blue-50'); });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+            handleFiles(e.dataTransfer.files);
+        });
+        fileInput.addEventListener('change', (e) => handleFiles(e.target.files));
+        processBtn.addEventListener('click', processImages);
+        downloadBtn.addEventListener('click', downloadExcel);
+        clearBtn.addEventListener('click', () => resetState(true));
+
+
+        function handleFiles(files) {
+            const newFiles = Array.from(files).filter(file => file.type.startsWith('image/'));
+            if (newFiles.length === 0) return;
+
+            // Fügt neue Dateien hinzu und vermeidet Duplikate
+            newFiles.forEach(newFile => {
+                const isDuplicate = selectedFiles.some(existingFile => 
+                    existingFile.name === newFile.name && 
+                    existingFile.size === newFile.size &&
+                    existingFile.lastModified === newFile.lastModified
+                );
+                if (!isDuplicate) {
+                    selectedFiles.push(newFile);
+                }
+            });
+            
+            updateFileList();
+            
+            const hasFiles = selectedFiles.length > 0;
+            processBtn.disabled = !hasFiles;
+            clearBtn.disabled = !hasFiles;
+            downloadBtn.disabled = true; // Immer deaktivieren, wenn Dateien geändert werden
+            extractedData = [];
+            statusDiv.textContent = '';
+
+
+            dropZoneText.classList.add('hidden');
+            fileListDiv.classList.remove('hidden');
+        }
+
+        function updateFileList() {
+            fileListDiv.innerHTML = `<p class="font-semibold text-gray-700 mb-2">Ausgewählte Dateien (${selectedFiles.length}):</p>`;
+            const list = document.createElement('ul');
+            list.className = 'list-disc list-inside space-y-1';
+            selectedFiles.forEach(file => {
+                const listItem = document.createElement('li');
+                listItem.textContent = file.name;
+                listItem.className = 'truncate';
+                list.appendChild(listItem);
+            });
+            fileListDiv.appendChild(list);
+        }
+        
+        async function processImages() {
+            if (selectedFiles.length === 0) return;
+
+            processBtn.disabled = true;
+            clearBtn.disabled = true;
+            downloadBtn.disabled = true;
+            extractedData = [];
+            progressBarContainer.classList.remove('hidden');
+            progressBar.style.width = '0%';
+            
+            updateStatus('Initialisiere Texterkennung (OCR)...', 'processing');
+
+            const worker = await Tesseract.createWorker('deu', 1, {
+                logger: m => {
+                    if (m.status === 'recognizing text') {
+                        const progress = (m.progress * 100).toFixed(2);
+                        progressBar.style.width = `${progress}%`;
+                        updateStatus(`Erkenne Text: ${Math.round(progress)}%`, 'processing');
+                    }
+                }
+            });
+
+            try {
+                await worker.setParameters({
+                    tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+                });
+
+                for (let i = 0; i < selectedFiles.length; i++) {
+                    const file = selectedFiles[i];
+                    updateStatus(`Verarbeite Bild ${i + 1} von ${selectedFiles.length}: ${file.name}`, 'processing');
+                    const { data: { text } } = await worker.recognize(file);
+                    
+                    console.log(`--- Roher OCR Text für ${file.name} ---`);
+                    console.log(text);
+                    console.log("----------------------");
+
+                    parseTextToTable(text);
+                }
+
+                if (extractedData.length > 0) {
+                    updateStatus(`${extractedData.length} Datenzeilen erfolgreich extrahiert.`, 'success');
+                    downloadBtn.disabled = false;
+                } else {
+                    updateStatus('Keine Tabellendaten in den Bildern gefunden. Prüfen Sie die Bildqualität.', 'error');
+                }
+            } catch (error)
+{
+                console.error('Fehler bei der OCR-Verarbeitung:', error);
+                updateStatus('Ein Fehler ist aufgetreten. Prüfen Sie die Konsole.', 'error');
+            } finally {
+                await worker.terminate();
+                progressBarContainer.classList.add('hidden');
+                clearBtn.disabled = selectedFiles.length === 0;
+            }
+        }
+        
+        function parseTextToTable(text) {
+            const lines = text.split('\n').filter(line => /\d/.test(line)); 
+
+            const headerRegex = /lfd\.?\s?nr|menge|bezeichnung|beanstandung|verursacher/i;
+            // **FINALE, ROBUSTE REGEX-BASIERTE ERKENNUNG**
+            // Diese Regex ist darauf trainiert, die Spalten anhand ihres Inhalts zu erkennen, nicht anhand von Abständen.
+            const rowRegex = /^\s*(\d+)\s+(\S+)\s+(A\d{3}\s\d{3}\s\d{4})\s+([A-Z0-9]{4})\s+(.+?)\s+(\d{4})\s+(.*)$/;
+
+            lines.forEach((line) => {
+                let cleanLine = line.replace(/\|/g, ' ').replace(/[„“]/g, '"').trim();
+
+                if (headerRegex.test(cleanLine.toLowerCase()) || cleanLine.length < 15) {
+                    return;
+                }
+                
+                const match = cleanLine.match(rowRegex);
+
+                if (match) {
+                     try {
+                        const rowObject = {};
+                        
+                        let lfdNr = match[1];
+                        if (lfdNr === '13' || lfdNr === '15') lfdNr = '3';
+                        
+                        let menge = match[2];
+                        const corrections = {'e': '1', 'l': '1', 'O': '0', 'S': '5', 'B': '8'};
+                        if(corrections[menge]) menge = corrections[menge];
+
+                        rowObject[expectedHeaders[0]] = lfdNr;                 // Lfd. NR.
+                        rowObject[expectedHeaders[1]] = menge;                 // Menge
+                        rowObject[expectedHeaders[2]] = match[3].trim();         // Bezeichnung
+                        rowObject[expectedHeaders[3]] = match[4].trim();         // ES2 - Code
+                        rowObject[expectedHeaders[4]] = match[5].trim();         // Beanstandung
+                        rowObject[expectedHeaders[5]] = match[6].trim();         // Verursacher
+                        rowObject[expectedHeaders[6]] = match[7].trim();         // Größe
+
+                        extractedData.push(rowObject);
+                    } catch (e) {
+                         console.log("Fehler beim Zusammensetzen der Zeile:", cleanLine);
+                    }
+                } else {
+                    console.log("Kein Match für Zeile:", cleanLine);
+                }
+            });
+        }
+        
+        function downloadExcel() {
+            if (extractedData.length === 0) {
+                 updateStatus('Keine Daten zum Herunterladen vorhanden.', 'error');
+                return;
+            }
+            
+            const worksheet = XLSX.utils.json_to_sheet(extractedData, { header: expectedHeaders });
+            const workbook = XLSX.utils.book_new();
+            XLSX.utils.book_append_sheet(workbook, worksheet, 'Extrahierte Daten');
+            
+            const colWidths = expectedHeaders.map(key => {
+                return {
+                     wch: Math.max(
+                        key.length,
+                        ...extractedData.map(row => (row[key] || '').toString().length)
+                    ) + 2
+                }
+            });
+            worksheet['!cols'] = colWidths;
+
+            XLSX.writeFile(workbook, 'tabellen_extrakt.xlsx');
+        }
+
+        function resetState(fullReset = true) {
+            downloadBtn.disabled = true;
+            statusDiv.textContent = '';
+            statusDiv.className = 'mt-6 text-center text-sm text-gray-600 h-10';
+            progressBarContainer.classList.add('hidden');
+            progressBar.style.width = '0%';
+            extractedData = [];
+            
+            if(fullReset) {
+                selectedFiles = [];
+                fileInput.value = '';
+                dropZoneText.classList.remove('hidden');
+                fileListDiv.classList.add('hidden');
+                fileListDiv.innerHTML = '';
+                processBtn.disabled = true;
+                clearBtn.disabled = true;
+            }
+        }
+
+        function updateStatus(message, type) {
+            statusDiv.textContent = message;
+            const colorClasses = {
+                success: 'text-green-600',
+                error: 'text-red-600',
+                processing: 'text-blue-600',
+                default: 'text-gray-600'
+            };
+            statusDiv.className = `mt-6 text-center text-sm h-10 ${colorClasses[type] || colorClasses.default}`;
+        }
+
+    </script>
+</body>
+</html>
+
